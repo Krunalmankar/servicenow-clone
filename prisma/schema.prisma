@@ -1,0 +1,445 @@
+// ServiceNow-style ITSM data model.
+// SQLite by default; change provider to "postgresql" for production.
+// Choice fields are stored as strings (see src/lib/choices.ts) so the schema stays portable.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Platform ----------
+
+model User {
+  id           String   @id @default(cuid())
+  userName     String   @unique
+  firstName    String
+  lastName     String
+  email        String   @unique
+  passwordHash String
+  title        String?
+  department   String?
+  phone        String?
+  location     String?
+  active       Boolean  @default(true)
+  managerId    String?
+  manager      User?    @relation("UserManager", fields: [managerId], references: [id])
+  reports      User[]   @relation("UserManager")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  roles       UserRole[]
+  memberships GroupMember[]
+  managedGroups Group[]    @relation("GroupManager")
+
+  incidentsCalled   Incident[] @relation("IncidentCaller")
+  incidentsAssigned Incident[] @relation("IncidentAssignee")
+  problemsAssigned  Problem[]  @relation("ProblemAssignee")
+  changesAssigned   ChangeRequest[] @relation("ChangeAssignee")
+  changesRequested  ChangeRequest[] @relation("ChangeRequester")
+  requestsFor       Request[]  @relation("RequestFor")
+  requestsBy        Request[]  @relation("RequestBy")
+  ritmsAssigned     RequestItem[] @relation("RitmAssignee")
+  tasksAssigned     CatalogTask[] @relation("TaskAssignee")
+  articles          KnowledgeArticle[]
+  approvals         Approval[]
+  journal           JournalEntry[]
+  ownedCis          ConfigurationItem[] @relation("CiOwner")
+}
+
+model Group {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  email       String?
+  active      Boolean  @default(true)
+  managerId   String?
+  manager     User?    @relation("GroupManager", fields: [managerId], references: [id])
+  createdAt   DateTime @default(now())
+
+  members   GroupMember[]
+  roles     GroupRole[]
+  incidents Incident[]
+  problems  Problem[]
+  changes   ChangeRequest[]
+  ritms     RequestItem[]
+  tasks     CatalogTask[]
+  catalogItems CatalogItem[]
+  supportedCis ConfigurationItem[] @relation("CiSupportGroup")
+}
+
+model GroupMember {
+  userId  String
+  groupId String
+  user    User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group   Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+}
+
+model Role {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  users       UserRole[]
+  groups      GroupRole[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+model GroupRole {
+  groupId String
+  roleId  String
+  group   Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  role    Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, roleId])
+}
+
+model NumberCounter {
+  prefix String @id
+  next   Int
+}
+
+// Work notes (internal) and additional comments (customer visible) for any task table.
+model JournalEntry {
+  id        String   @id @default(cuid())
+  table     String
+  recordId  String
+  type      String // work_notes | comments
+  body      String
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([table, recordId])
+}
+
+// Field-level change history (sys_audit equivalent).
+model AuditLog {
+  id        String   @id @default(cuid())
+  table     String
+  recordId  String
+  field     String
+  oldValue  String?
+  newValue  String?
+  userId    String?
+  userName  String?
+  createdAt DateTime @default(now())
+
+  @@index([table, recordId])
+}
+
+// ---------- Incident ----------
+
+model Incident {
+  id               String    @id @default(cuid())
+  number           String    @unique
+  shortDescription String
+  description      String?
+  callerId         String
+  caller           User      @relation("IncidentCaller", fields: [callerId], references: [id])
+  category         String    @default("inquiry")
+  subcategory      String?
+  contactType      String    @default("self-service")
+  impact           Int       @default(3)
+  urgency          Int       @default(3)
+  priority         Int       @default(5)
+  state            String    @default("new")
+  onHoldReason     String?
+  assignmentGroupId String?
+  assignmentGroup  Group?    @relation(fields: [assignmentGroupId], references: [id])
+  assignedToId     String?
+  assignedTo       User?     @relation("IncidentAssignee", fields: [assignedToId], references: [id])
+  ciId             String?
+  ci               ConfigurationItem? @relation(fields: [ciId], references: [id])
+  problemId        String?
+  problem          Problem?  @relation(fields: [problemId], references: [id])
+  changeId         String?   // caused by change
+  causedByChange   ChangeRequest? @relation(fields: [changeId], references: [id])
+  resolutionCode   String?
+  resolutionNotes  String?
+  reassignmentCount Int      @default(0)
+  reopenCount      Int       @default(0)
+  openedAt         DateTime  @default(now())
+  resolvedAt       DateTime?
+  closedAt         DateTime?
+  updatedAt        DateTime  @updatedAt
+}
+
+// ---------- Problem ----------
+
+model Problem {
+  id               String    @id @default(cuid())
+  number           String    @unique
+  shortDescription String
+  description      String?
+  category         String    @default("software")
+  impact           Int       @default(3)
+  urgency          Int       @default(3)
+  priority         Int       @default(5)
+  state            String    @default("new")
+  assignmentGroupId String?
+  assignmentGroup  Group?    @relation(fields: [assignmentGroupId], references: [id])
+  assignedToId     String?
+  assignedTo       User?     @relation("ProblemAssignee", fields: [assignedToId], references: [id])
+  ciId             String?
+  ci               ConfigurationItem? @relation(fields: [ciId], references: [id])
+  rootCause        String?
+  workaround       String?
+  fix              String?
+  knownError       Boolean   @default(false)
+  resolutionCode   String?
+  openedAt         DateTime  @default(now())
+  resolvedAt       DateTime?
+  closedAt         DateTime?
+  updatedAt        DateTime  @updatedAt
+
+  incidents Incident[]
+}
+
+// ---------- Change ----------
+
+model ChangeRequest {
+  id                 String    @id @default(cuid())
+  number             String    @unique
+  shortDescription   String
+  description        String?
+  type               String    @default("normal") // normal | standard | emergency
+  category           String    @default("software")
+  state              String    @default("new")
+  risk               String    @default("moderate")
+  impact             Int       @default(3)
+  priority           Int       @default(4)
+  approval           String    @default("not_requested") // not_requested | requested | approved | rejected
+  requestedById      String
+  requestedBy        User      @relation("ChangeRequester", fields: [requestedById], references: [id])
+  assignmentGroupId  String?
+  assignmentGroup    Group?    @relation(fields: [assignmentGroupId], references: [id])
+  assignedToId       String?
+  assignedTo         User?     @relation("ChangeAssignee", fields: [assignedToId], references: [id])
+  ciId               String?
+  ci                 ConfigurationItem? @relation(fields: [ciId], references: [id])
+  justification      String?
+  implementationPlan String?
+  backoutPlan        String?
+  testPlan           String?
+  riskImpactAnalysis String?
+  plannedStart       DateTime?
+  plannedEnd         DateTime?
+  actualStart        DateTime?
+  actualEnd          DateTime?
+  closeCode          String?
+  closeNotes         String?
+  openedAt           DateTime  @default(now())
+  closedAt           DateTime?
+  updatedAt          DateTime  @updatedAt
+
+  incidentsCaused Incident[]
+}
+
+// Approvals for changes and requested items (sysapproval_approver equivalent).
+model Approval {
+  id         String    @id @default(cuid())
+  table      String // change_request | sc_req_item
+  recordId   String
+  approverId String
+  approver   User      @relation(fields: [approverId], references: [id])
+  state      String    @default("requested") // requested | approved | rejected | cancelled
+  comments   String?
+  createdAt  DateTime  @default(now())
+  decidedAt  DateTime?
+
+  @@index([table, recordId])
+}
+
+// ---------- Service Catalog ----------
+
+model CatalogCategory {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  icon        String?
+  order       Int     @default(100)
+  items       CatalogItem[]
+}
+
+model CatalogItem {
+  id                 String   @id @default(cuid())
+  name               String
+  shortDescription   String
+  description        String?
+  categoryId         String
+  category           CatalogCategory @relation(fields: [categoryId], references: [id])
+  price              Float    @default(0)
+  deliveryDays       Int      @default(3)
+  requiresApproval   Boolean  @default(false)
+  fulfillmentGroupId String?
+  fulfillmentGroup   Group?   @relation(fields: [fulfillmentGroupId], references: [id])
+  // JSON array of {name,label,type:"text"|"textarea"|"select"|"checkbox"|"date",required?,options?}
+  variables          String   @default("[]")
+  // JSON array of fulfilment task short descriptions created when the item is approved
+  taskTemplates      String   @default("[]")
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  ritms              RequestItem[]
+}
+
+model Request {
+  id              String   @id @default(cuid())
+  number          String   @unique
+  requestedForId  String
+  requestedFor    User     @relation("RequestFor", fields: [requestedForId], references: [id])
+  requestedById   String
+  requestedBy     User     @relation("RequestBy", fields: [requestedById], references: [id])
+  state           String   @default("open") // open | closed_complete | closed_incomplete
+  approval        String   @default("not_requested")
+  specialInstructions String?
+  dueDate         DateTime?
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  items           RequestItem[]
+}
+
+model RequestItem {
+  id                String   @id @default(cuid())
+  number            String   @unique
+  requestId         String
+  request           Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  itemId            String
+  item              CatalogItem @relation(fields: [itemId], references: [id])
+  quantity          Int      @default(1)
+  variables         String   @default("{}")
+  state             String   @default("open") // open | work_in_progress | closed_complete | closed_incomplete
+  stage             String   @default("waiting_for_approval") // waiting_for_approval | fulfillment | delivered | rejected
+  approval          String   @default("not_requested")
+  assignmentGroupId String?
+  assignmentGroup   Group?   @relation(fields: [assignmentGroupId], references: [id])
+  assignedToId      String?
+  assignedTo        User?    @relation("RitmAssignee", fields: [assignedToId], references: [id])
+  openedAt          DateTime @default(now())
+  closedAt          DateTime?
+  tasks             CatalogTask[]
+}
+
+model CatalogTask {
+  id                String   @id @default(cuid())
+  number            String   @unique
+  ritmId            String
+  ritm              RequestItem @relation(fields: [ritmId], references: [id], onDelete: Cascade)
+  shortDescription  String
+  description       String?
+  state             String   @default("open") // open | work_in_progress | closed_complete | closed_incomplete
+  assignmentGroupId String?
+  assignmentGroup   Group?   @relation(fields: [assignmentGroupId], references: [id])
+  assignedToId      String?
+  assignedTo        User?    @relation("TaskAssignee", fields: [assignedToId], references: [id])
+  openedAt          DateTime @default(now())
+  closedAt          DateTime?
+}
+
+// ---------- CMDB ----------
+
+model ConfigurationItem {
+  id             String   @id @default(cuid())
+  name           String   @unique
+  ciClass        String // business_service | application | server | database | network | computer | storage
+  status         String   @default("operational") // operational | non_operational | repair | retired
+  environment    String   @default("production")
+  criticality    String   @default("3")
+  ipAddress      String?
+  fqdn           String?
+  os             String?
+  version        String?
+  serialNumber   String?
+  manufacturer   String?
+  location       String?
+  description    String?
+  ownedById      String?
+  ownedBy        User?    @relation("CiOwner", fields: [ownedById], references: [id])
+  supportGroupId String?
+  supportGroup   Group?   @relation("CiSupportGroup", fields: [supportGroupId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  parentRels CiRelationship[] @relation("RelParent")
+  childRels  CiRelationship[] @relation("RelChild")
+  incidents  Incident[]
+  problems   Problem[]
+  changes    ChangeRequest[]
+}
+
+model CiRelationship {
+  id       String @id @default(cuid())
+  parentId String
+  childId  String
+  type     String // "depends_on" | "runs_on" | "hosted_on" | "connected_to" | "contains"
+  parent   ConfigurationItem @relation("RelParent", fields: [parentId], references: [id], onDelete: Cascade)
+  child    ConfigurationItem @relation("RelChild", fields: [childId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, childId, type])
+}
+
+// ---------- Knowledge ----------
+
+model KnowledgeArticle {
+  id            String    @id @default(cuid())
+  number        String    @unique
+  title         String
+  body          String
+  knowledgeBase String    @default("IT")
+  category      String    @default("general")
+  state         String    @default("draft") // draft | review | published | retired
+  keywords      String?
+  authorId      String
+  author        User      @relation(fields: [authorId], references: [id])
+  views         Int       @default(0)
+  helpfulYes    Int       @default(0)
+  helpfulNo     Int       @default(0)
+  validTo       DateTime?
+  publishedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ---------- SLA ----------
+
+model SlaDefinition {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  table       String // incident | sc_req_item | problem | change_request
+  type        String  @default("resolution") // response | resolution
+  // JSON object of field -> allowed values, e.g. {"priority":["1"]}; empty = all records
+  condition   String  @default("{}")
+  durationMinutes Int
+  pauseStates String  @default("on_hold") // comma separated
+  active      Boolean @default(true)
+  taskSlas    TaskSla[]
+}
+
+model TaskSla {
+  id              String    @id @default(cuid())
+  slaId           String
+  sla             SlaDefinition @relation(fields: [slaId], references: [id], onDelete: Cascade)
+  table           String
+  recordId        String
+  stage           String    @default("in_progress") // in_progress | paused | completed | cancelled
+  startTime       DateTime  @default(now())
+  breachTime      DateTime
+  endTime         DateTime?
+  pausedAt        DateTime?
+  pausedSeconds   Int       @default(0)
+  hasBreached     Boolean   @default(false)
+
+  @@index([table, recordId])
+}
